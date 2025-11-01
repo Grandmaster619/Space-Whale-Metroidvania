@@ -1,3 +1,4 @@
+using System;
 using System.Collections;
 using UnityEngine;
 
@@ -59,11 +60,12 @@ public class Player_Movement : MonoBehaviour
     [SerializeField] AnimationCurve ledgeClimbCurve = AnimationCurve.EaseInOut(0, 0, 1, 1);
 
     [Header("Dash Settings")]
-    public float dashSpeed = 15f;
-    public float dashDuration = 0.25f;
+    [SerializeField] bool dashUnlocked = true;
+    [SerializeField] float initialDashSpeed = 15f;
+    [SerializeField] float runningDashSpeed = 5;
+    [SerializeField] float dashDuration = 0.25f;
 
-    private Vector2 dashDirection;
-    private float dashTimer;
+    
 
     // -------------- Components -------------------------
     private Rigidbody2D rb;
@@ -74,7 +76,9 @@ public class Player_Movement : MonoBehaviour
     private PlayerState state = PlayerState.Idle;
     private float horizontalInput;
     private float verticalInput;
-    private bool facingRight = true;
+    private bool dashPressedInput;
+    private bool dashHeldInput;
+    private int facingDirection;
 
     private bool isGrounded;
     private bool onWall;
@@ -86,6 +90,13 @@ public class Player_Movement : MonoBehaviour
     private bool jumpPressedWithBuffer;
     private float wallJumpLockTimer;
 
+    private Vector2 dashDirection;
+    private float dashTimer;
+    private bool usedDash;
+
+    // --------------- Random ---------------------------
+    Vector3 wallPosition;
+
     void Awake()
     {
         rb = GetComponent<Rigidbody2D>();
@@ -93,6 +104,7 @@ public class Player_Movement : MonoBehaviour
         col = GetComponent<BoxCollider2D>();
 
         lastJumpPressedTime = -999f;
+        facingDirection = 1;
     }
 
     void Update()
@@ -100,6 +112,8 @@ public class Player_Movement : MonoBehaviour
         // --- Input---
         horizontalInput = Input.GetAxisRaw("Horizontal");
         verticalInput = Input.GetAxisRaw("Vertical");
+        dashPressedInput = Input.GetKeyDown(KeyCode.C);
+        dashHeldInput = Input.GetKey(KeyCode.C);
 
         // jump buffering
         if (Input.GetButtonDown("Jump"))
@@ -112,13 +126,9 @@ public class Player_Movement : MonoBehaviour
             jumpHeld = false;
 
         // dash
-        if (state != PlayerState.Dash && Input.GetKeyDown(KeyCode.C))
+        if (state != PlayerState.Dash && dashPressedInput && dashUnlocked && !usedDash)
         {
-            Vector2 inputDir = new Vector2(Input.GetAxisRaw("Horizontal"), Input.GetAxisRaw("Vertical"));
-            if (inputDir == Vector2.zero)
-                inputDir = Vector2.right * transform.localScale.x; // default forward dash
-
-            StartDash(inputDir.normalized);
+            StartDash();
         }
     }
 
@@ -127,13 +137,17 @@ public class Player_Movement : MonoBehaviour
         // --- Environment Checks (physics) ---
         var bounds = col.bounds;
         jumpPressedWithBuffer = Time.time - lastJumpPressedTime <= jumpBuffer;
+        facingDirection = CheckFacingDirection();
         isGrounded = CheckGrounded(bounds);
         onWall = CheckWall(bounds);
         nearLedge = CheckLedge(bounds);
 
         // record grounded time for coyote
         if (isGrounded)
+        {
             lastGroundedTime = Time.time;
+            usedDash = false;
+        }
 
         // --- State Machine (physics-tied) ---
         switch (state)
@@ -142,18 +156,19 @@ public class Player_Movement : MonoBehaviour
             case PlayerState.Run: HandleRun(); break;
             case PlayerState.Jump: HandleJump(); break;
             case PlayerState.Fall: HandleFall(); break;
-            case PlayerState.Turn: HandleTurn(); break;
+            //case PlayerState.Turn: HandleTurn(); break;
             case PlayerState.WallSlide: HandleWallSlide(); break;
             case PlayerState.WallJump: HandleWallJump(); break;
             case PlayerState.LedgeHang: HandleLedgeHang(); break;
             case PlayerState.LedgeClimb: HandleLedgeClimb(); break;
-            case PlayerState.Backflip: HandleBackflip(); break;
+            //case PlayerState.Backflip: HandleBackflip(); break;
             case PlayerState.Dash: HandleDash(); break;
         }
 
         MomentumHandler();
     }
 
+    
 
     void HandleIdle()
     {
@@ -182,10 +197,10 @@ public class Player_Movement : MonoBehaviour
             return;
         }
 
-        if (Mathf.Sign(horizontalInput) != (facingRight ? 1 : -1))
+        if (Mathf.Sign(horizontalInput) != facingDirection)
         {
-            ChangeState(PlayerState.Turn);
-            return;
+            //ChangeState(PlayerState.Turn);
+            //return;
         }
 
         if (TryJump())
@@ -201,9 +216,9 @@ public class Player_Movement : MonoBehaviour
 
     void HandleTurn()
     {
-        facingRight = !facingRight;
+        facingDirection *= -1;
 
-        rb.linearVelocity = new Vector2(turnBoost * moveSpeed * (facingRight ? 1 : -1), rb.linearVelocity.y);
+        rb.linearVelocity = new Vector2(turnBoost * moveSpeed * facingDirection, rb.linearVelocity.y);
 
         if (TryJump())
         {
@@ -268,13 +283,11 @@ public class Player_Movement : MonoBehaviour
 
         if (!isGrounded && jumpPressedWithBuffer)
         {
-            float dir = facingRight ? -1 : 1;
+            // Flip facing direction
+            facingDirection *= -1;
 
             // Push off the wall
-            rb.linearVelocity = new Vector2(dir * wallJumpHorizontalBoost, wallJumpVerticalBoost);
-
-            // Flip facing direction
-            facingRight = !facingRight;
+            rb.linearVelocity = new Vector2(facingDirection * wallJumpHorizontalBoost, wallJumpVerticalBoost);
 
             // Temporarily disable air control
             wallJumpLockTimer = Time.time + wallJumpControlLock;
@@ -282,7 +295,7 @@ public class Player_Movement : MonoBehaviour
             ChangeState(PlayerState.WallJump);
         }
 
-        if (nearLedge && !ledgeDetected && verticalInput >= 0)
+        if (nearLedge && !ledgeDetected)
         {
             SetLedgeHang();
         }
@@ -299,6 +312,7 @@ public class Player_Movement : MonoBehaviour
     {
         if (Time.time > wallJumpLockTimer)
         {
+            rb.linearVelocity = new Vector2(airMoveSpeed, rb.linearVelocity.y);
             if (rb.linearVelocity.y < 0)
                 ChangeState(PlayerState.Fall);
             else if (isGrounded)
@@ -341,7 +355,8 @@ public class Player_Movement : MonoBehaviour
         }
 
         // Move away from wall
-        if ((facingRight && horizontalInput < 0) || (!facingRight && horizontalInput > 0))
+        if ((horizontalInput > 0f && wallPosition.x < transform.position.x) 
+            || (horizontalInput < 0f && wallPosition.x > transform.position.x))
         {
             rb.gravityScale = gravityScale;
             ledgeDetected = false;
@@ -375,6 +390,11 @@ public class Player_Movement : MonoBehaviour
 
         if (dashTimer <= 0f)
         {
+            if (dashDirection.y < 0)
+                rb.linearVelocity = new Vector2(facingDirection * moveSpeed, -1 * moveSpeed);
+            else
+                rb.linearVelocity = new Vector2(facingDirection * moveSpeed, 1f);
+
             if (isGrounded)
                 ChangeState(PlayerState.Idle);
             else
@@ -387,58 +407,26 @@ public class Player_Movement : MonoBehaviour
         // Disable under certain conditions
         if (state == PlayerState.WallJump && Time.time < wallJumpLockTimer)
             return;
-        if (state == PlayerState.LedgeHang)
+        if (state == PlayerState.LedgeHang || state == PlayerState.Dash)
             return;
 
         bool grounded = (state == PlayerState.Idle || state == PlayerState.Run || state == PlayerState.Turn);
-        float targetSpeed = grounded ? moveSpeed : airMoveSpeed;
+        float targetSpeed = grounded ? (dashHeldInput ? runningDashSpeed : moveSpeed) : airMoveSpeed;
         Vector2 velocity = rb.linearVelocity;
 
-        // Limit excessive horizontal velocity (from dashes or external boosts)
-        if (grounded)
-        {
-            if (Mathf.Abs(velocity.x) > moveSpeed + 0.1f)
-            {
-                velocity.x = Mathf.MoveTowards(velocity.x, Mathf.Sign(velocity.x) * moveSpeed, groundFriction * Time.deltaTime);
-                
-            }
-            else
-            {
-                velocity.x = horizontalInput * targetSpeed;
-            }
-        }
-        else // in the air
-        {
-            if (Mathf.Abs(velocity.x) > moveSpeed + 0.1f)
-            {
-                //
-            }
-            else
-            {
-                velocity.x = horizontalInput * targetSpeed;
-            }
-        }
+
+        velocity.x = horizontalInput * targetSpeed;
 
         rb.linearVelocity = new Vector2(velocity.x, velocity.y);
-
-        // Flip facing direction only when on ground or during normal jump/fall, not during wall interactions
-        if (horizontalInput != 0 && state != PlayerState.Turn)
-        {
-            bool inputRight = horizontalInput > 0;
-            if (inputRight != facingRight && !onWall)
-            {
-                facingRight = inputRight;
-            }
-        }
     }
 
     void SetLedgeHang()
     {
         // Find exact ledge position
-        RaycastHit2D hit = Physics2D.Raycast(transform.position + Vector3.up * ledgeCheckLower, Vector2.right * (facingRight ? 1 : -1), wallCheck, GroundLayer);
+        RaycastHit2D hit = Physics2D.Raycast(transform.position + Vector3.up * ledgeCheckLower, Vector2.right * facingDirection, wallCheck, GroundLayer);
         if (hit)
         {
-            ledgeHangPoint = new Vector2(hit.point.x - (facingRight ? col.bounds.extents.x - ledgeOffset.x : -col.bounds.extents.x + ledgeOffset.x), hit.point.y - col.bounds.extents.y * ledgeOffset.y);
+            ledgeHangPoint = new Vector2(hit.point.x - ((col.bounds.extents.x - ledgeOffset.x) * facingDirection), hit.point.y - col.bounds.extents.y * ledgeOffset.y);
             ledgeDetected = true;
             ChangeState(PlayerState.LedgeHang);
         }
@@ -448,7 +436,7 @@ public class Player_Movement : MonoBehaviour
     {
         Vector2 startPos = transform.position;
         Vector2 targetPos = startPos + new Vector2(
-            (facingRight ? 1 : -1) * ledgeClimbOffset.x,
+            facingDirection * ledgeClimbOffset.x,
             ledgeClimbOffset.y
         );
 
@@ -484,14 +472,18 @@ public class Player_Movement : MonoBehaviour
         ChangeState(PlayerState.Idle);
     }
 
-    private void StartDash(Vector2 direction)
+    private void StartDash()
     {
-        dashDirection = direction;
+        usedDash = true;
         dashTimer = dashDuration;
         state = PlayerState.Dash;
 
         // Apply the initial boost
-        rb.linearVelocity = dashDirection * dashSpeed;
+        Vector2 inputDir = new Vector2(horizontalInput, verticalInput);
+        if (inputDir == Vector2.zero)
+            inputDir = new Vector2(facingDirection, 0f); // default forward dash
+        dashDirection = inputDir.normalized;
+        rb.linearVelocity = dashDirection * initialDashSpeed;
 
     }
 
@@ -526,11 +518,20 @@ public class Player_Movement : MonoBehaviour
             ledgeDetected = false;
     }
 
+    private int CheckFacingDirection()
+    {
+        if (horizontalInput > 0)        return 1;
+        else if (horizontalInput < 0)   return -1;
+        
+        return facingDirection;
+    }
+
     bool CheckWall(Bounds bounds)
     {
         Vector2 origin = bounds.center;
-        Vector2 dir = facingRight ? Vector2.right : Vector2.left;
+        Vector2 dir = new Vector2(facingDirection, 0f);
         var hit = Physics2D.Raycast(origin, dir, wallCheck, GroundLayer);
+        if (hit.collider != null) wallPosition = hit.point;
         Debug.DrawRay(origin, dir * wallCheck, Color.magenta);
         return hit.collider != null;
     }
@@ -538,7 +539,7 @@ public class Player_Movement : MonoBehaviour
     bool CheckLedge(Bounds bounds)
     {
         Vector2 origin = bounds.center;
-        Vector2 dir = facingRight ? Vector2.right : Vector2.left;
+        Vector2 dir = new Vector2(facingDirection, 0f);
 
         Vector2 lowerOrigin = origin + Vector2.up * ledgeCheckLower;
         RaycastHit2D lowerHit = Physics2D.Raycast(lowerOrigin, dir, ledgeCheckHorizontal, GroundLayer);
@@ -546,8 +547,8 @@ public class Player_Movement : MonoBehaviour
         Vector2 upperOrigin = origin + Vector2.up * ledgeCheckUpper;
         RaycastHit2D upperHit = Physics2D.Raycast(upperOrigin, dir, ledgeCheckHorizontal, GroundLayer);
 
-        Debug.DrawRay(lowerOrigin, dir * ledgeCheckHorizontal, Color.red);
-        Debug.DrawRay(upperOrigin, dir * ledgeCheckHorizontal, Color.green);
+        Debug.DrawRay(lowerOrigin, dir * ledgeCheckHorizontal, lowerHit.collider == null ? Color.red : Color.green);
+        Debug.DrawRay(upperOrigin, dir * ledgeCheckHorizontal, upperHit.collider == null ? Color.red : Color.green);
 
         // near ledge if lower hits but upper doesn't
         return lowerHit.collider != null && upperHit.collider == null;
