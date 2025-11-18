@@ -93,6 +93,8 @@ public class Player_Movement : MonoBehaviour
     [Header("Wall Climb")]
     [SerializeField] float wallMoveSpeed = 4f;
     [SerializeField] float wallCheckDistance = 0.3f;
+    [SerializeField] float secondSphereCastOffset = 0.5f;
+    RaycastHit2D wall_climb_wall_pos;
 
     public float GetAttackCooldown() { return attackCooldown; }
     private float attack_timer;
@@ -584,22 +586,37 @@ public class Player_Movement : MonoBehaviour
 
     void HandleWallClimb()
     {
-        RaycastHit2D hit = Physics2D.CircleCast(transform.position, wallCheckDistance, Vector2.one * 0.001f, 0.001f, GroundLayer);
-
-        if (hit)
+        if (CheckWallDuringAttack(out RaycastHit2D hit))
         {
-            Vector2 wallNormal = hit.normal;
-
-            if (Mathf.Abs(horizontalInput) > 0.1f || Mathf.Abs(verticalInput) > 0.1f)
-                rb.linearVelocity = new Vector2(horizontalInput, verticalInput) * wallMoveSpeed;
-            else
-                rb.linearVelocity = Vector2.zero;  // Stay floating
+            wall_climb_wall_pos = hit;
+            Debug.DrawLine(transform.position, wall_climb_wall_pos.point);
         }
-        else
+
+        // ---------------- MOVEMENT INPUT ----------------
+        Vector2 input = new Vector2(horizontalInput, verticalInput).normalized;
+        Vector2 desiredVelocity = input * wallMoveSpeed;
+        Vector2 nextPos = (Vector2)transform.position + desiredVelocity * Time.fixedDeltaTime;
+
+        Vector2 offset = nextPos - wall_climb_wall_pos.point;
+        float distance = offset.magnitude;
+
+        // TODO: fix priority --V
+        float newWallCheckDistance = wallCheckDistance + secondSphereCastOffset;
+
+        //  INSIDE THE CIRCLE? MOVE NORMALLY
+        if (distance <= newWallCheckDistance)
         {
-            ChangeState(PlayerState.Fall);
+            rb.linearVelocity = desiredVelocity;
             return;
         }
+
+        // Get nearest valid point ON the circle
+        Vector2 clampedPos = wall_climb_wall_pos.point + offset.normalized * newWallCheckDistance;
+
+        // SLERP toward it instead of snapping
+        transform.position = (Vector2)Vector3.Slerp(transform.position, clampedPos, wallMoveSpeed * 4f * Time.deltaTime);
+        rb.linearVelocity = Vector2.zero;  // Stay floating
+
 
         if (jumpPressedWithBuffer)
         {
@@ -613,9 +630,13 @@ public class Player_Movement : MonoBehaviour
     {
         if (state == PlayerState.Attack)
         {
-            rb.linearVelocity = Vector3.zero;
-            rb.gravityScale = 0f;
-            state = PlayerState.WallClimb;
+            if (CheckWallDuringAttack(out RaycastHit2D hit))
+            {
+                wall_climb_wall_pos = hit;
+                rb.linearVelocity = Vector3.zero;
+                rb.gravityScale = 0f;
+                state = PlayerState.WallClimb;
+            }
         }
     }
 
@@ -624,7 +645,7 @@ public class Player_Movement : MonoBehaviour
         // Disable under certain conditions
         if (state == PlayerState.WallJump && Time.time < wallJumpLockTimer)
             return;
-        if (state == PlayerState.LedgeHang || state == PlayerState.Dash || state == PlayerState.Wavedash)
+        if (state == PlayerState.LedgeHang || state == PlayerState.Dash || state == PlayerState.Wavedash || state == PlayerState.WallClimb)
             return;
 
         bool grounded = (state == PlayerState.Idle || state == PlayerState.Run || state == PlayerState.Turn);
@@ -796,6 +817,25 @@ public class Player_Movement : MonoBehaviour
         return hit.collider != null;
     }
 
+    bool CheckWallDuringAttack(out RaycastHit2D hit)
+    {
+        RaycastHit2D hit1 = Physics2D.CircleCast(transform.position, wallCheckDistance, Vector2.one * 0.001f, 0.001f, GroundLayer);
+        RaycastHit2D hit2 = Physics2D.CircleCast(transform.position + Vector3.down * secondSphereCastOffset, wallCheckDistance, Vector2.one * 0.001f, 0.001f, GroundLayer);
+
+        if (hit1)
+        {
+            hit = hit1;
+            return true;
+        }
+        if (hit2)
+        {
+            hit = hit2;
+            return true;
+        }
+        hit = hit1;
+        return false;
+    }
+
     bool CheckLedge(Bounds bounds)
     {
         Vector2 origin = bounds.center;
@@ -848,6 +888,7 @@ public class Player_Movement : MonoBehaviour
     {
         Gizmos.color = Color.yellow;
         Gizmos.DrawWireSphere(transform.position, wallCheckDistance);
+        Gizmos.DrawWireSphere(transform.position + Vector3.down * secondSphereCastOffset, wallCheckDistance);
     }
 
 }
