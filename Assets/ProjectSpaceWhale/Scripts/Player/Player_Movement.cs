@@ -1,32 +1,35 @@
 using System;
 using System.Collections;
-using System.ComponentModel;
+using System.Collections.Generic;
 using UnityEngine;
+
+// ------------ Enums -------------------------
+public enum PlayerState
+{
+    Idle,
+    Run,
+    Jump,
+    Fall,
+
+    Turn, // TODO
+    Backflip, // TODO
+
+    WallSlide,
+    WallJump,
+
+    LedgeHang,
+    LedgeClimb,
+
+    Dash,
+    Wavedash,
+    Wallrun,
+
+    Attack,
+    WallClimb
+}
 
 public class Player_Movement : MonoBehaviour
 {
-    // ------------ Enums -------------------------
-    private enum PlayerState
-    {
-        Idle,
-        Run,
-        Jump,
-        Fall,
-        
-        Turn, // TODO
-        Backflip, // TODO
-        
-        WallSlide,
-        WallJump,
-        
-        LedgeHang,
-        LedgeClimb,
-        
-        Dash,
-        Wavedash,
-        Wallrun
-    }
-
     // ------------- Inspector Fields -------------------------
     [Header("Movement")]
     [SerializeField] float moveSpeed = 6f;
@@ -78,9 +81,28 @@ public class Player_Movement : MonoBehaviour
     [SerializeField] float wallRunMultiplier;
     [SerializeField] float wallRunJumpMultiplier = 0.2f;
 
+    [Header("Attack")]
+    [SerializeField] float attackCooldown = 0.4f;
+    [SerializeField] Vector3 ranUpAttackRange_Top;
+    [SerializeField] Vector3 ranUpAttackRange_Down;
+    [SerializeField] float ranUpAttackRadius = 0.02f;
+    [SerializeField] Vector3 ranForwardAttackRange_Top;
+    [SerializeField] Vector3 ranForwardAttackRange_Down;
+    [SerializeField] float ranForwardAttackRadius = 0.04f;
+
+    [Header("Wall Climb")]
+    [SerializeField] float wallMoveSpeed = 4f;
+    [SerializeField] float wallCheckDistance = 0.3f;
+
+    public float GetAttackCooldown() { return attackCooldown; }
+    private float attack_timer;
+    public float GetAttackTimer() { return attack_timer; }
+
+
     [Header("Debug")]
     [SerializeField] float groundedTime;
     [SerializeField] float airTime;
+    [SerializeField] private PlayerState state = PlayerState.Idle;
 
 
     // -------------- Components -------------------------
@@ -89,12 +111,15 @@ public class Player_Movement : MonoBehaviour
 
 
     // --------------- State Data ---------------------------
-    private PlayerState state = PlayerState.Idle;
+    public PlayerState GetPlayerState() { return state; }
+
     private float horizontalInput;
     private float verticalInput;
     private bool dashPressedInput;
     private bool dashHeldInput;
     private int facingDirection;
+    public int GetFacingDirection() { return facingDirection; }
+    private bool attackInput;
 
     private bool isGrounded;
     private bool onWall;
@@ -111,8 +136,14 @@ public class Player_Movement : MonoBehaviour
     private bool usedDash;
     private bool midAirDash;
 
-    // --------------- Random ---------------------------
+    // --------------- Other ---------------------------
     Vector3 wallPosition;
+    List<int> pool = new List<int>() { 0, 1, 2, 3 };
+    private Vector3 attackPosition;
+    public Vector3 GetAttackPosition() { return attackPosition; }
+    private int tailIndex;
+    private int shuffleIndex;
+    public int GetTailIndex() { return tailIndex; }
 
     void Awake()
     {
@@ -131,6 +162,7 @@ public class Player_Movement : MonoBehaviour
         verticalInput = Input.GetAxisRaw("Vertical");
         dashPressedInput = Input.GetKeyDown(KeyCode.C);
         dashHeldInput = Input.GetKey(KeyCode.C);
+        attackInput = Input.GetKeyDown(KeyCode.X);
 
         // jump buffering
         if (Input.GetButtonDown("Jump"))
@@ -146,6 +178,16 @@ public class Player_Movement : MonoBehaviour
         if (state != PlayerState.Dash && dashPressedInput && dashUnlocked && !usedDash)
         {
             StartDash();
+        }
+
+        // attack
+        if (attackInput && attack_timer <= 0)
+        {
+            StartAttack();
+        }
+        else if (attack_timer > 0)
+        {
+            attack_timer -= Time.deltaTime;
         }
     }
 
@@ -193,6 +235,9 @@ public class Player_Movement : MonoBehaviour
             case PlayerState.Dash: HandleDash(); break;
             case PlayerState.Wavedash: HandleWavedash(); break;
             case PlayerState.Wallrun: HandleWallRun(); break;
+
+            case PlayerState.Attack: HandleAttack(); break;
+            case PlayerState.WallClimb: HandleWallClimb(); break;
         }
 
         MomentumHandler();
@@ -430,7 +475,6 @@ public class Player_Movement : MonoBehaviour
     void HandleDash()
     {
         // Wavedash
-        Debug.Log(groundedTime + " " + (groundedTime >= waveDashGroundedTime));
         if (midAirDash && dashDirection.y < 0 && groundedTime >= waveDashGroundedTime && TryJump())
         {
             Jump(waveDashForce);
@@ -520,6 +564,61 @@ public class Player_Movement : MonoBehaviour
         }
     }
 
+    void HandleAttack()
+    {
+        if (attack_timer < 0)
+        {
+            // Grounded or not
+            if (isGrounded)
+            {
+                ChangeState(PlayerState.Idle);
+                return;
+            }
+            else
+            {
+                ChangeState(PlayerState.Fall);
+                return;
+            }              
+        }
+    }
+
+    void HandleWallClimb()
+    {
+        RaycastHit2D hit = Physics2D.CircleCast(transform.position, wallCheckDistance, Vector2.one * 0.001f, 0.001f, GroundLayer);
+
+        if (hit)
+        {
+            Vector2 wallNormal = hit.normal;
+
+            if (Mathf.Abs(horizontalInput) > 0.1f || Mathf.Abs(verticalInput) > 0.1f)
+                rb.linearVelocity = new Vector2(horizontalInput, verticalInput) * wallMoveSpeed;
+            else
+                rb.linearVelocity = Vector2.zero;  // Stay floating
+        }
+        else
+        {
+            ChangeState(PlayerState.Fall);
+            return;
+        }
+
+        if (jumpPressedWithBuffer)
+        {
+            Jump(jumpForce);
+            ChangeState(PlayerState.Jump);
+            return;
+        }
+    }
+
+    public void StruckWallWithAttack()
+    {
+        if (state == PlayerState.Attack)
+        {
+            rb.linearVelocity = Vector3.zero;
+            rb.gravityScale = 0f;
+            state = PlayerState.WallClimb;
+        }
+    }
+
     void MomentumHandler()
     {
         // Disable under certain conditions
@@ -605,6 +704,27 @@ public class Player_Movement : MonoBehaviour
         dashDirection = inputDir.normalized;
         rb.linearVelocity = dashDirection * initialDashSpeed;
 
+    }
+
+    private void StartAttack()
+    {
+        attack_timer = attackCooldown;
+        state = PlayerState.Attack;
+
+        if (verticalInput > 0f)
+        {
+
+            tailIndex = Extra_Random.GetRandomNonRepeating(shuffleIndex, out int newIndex, pool);
+            shuffleIndex = newIndex;
+            attackPosition = Extra_Random.RandomPointInCapsule(ranUpAttackRange_Top, ranUpAttackRange_Down, ranUpAttackRadius);
+        }
+        else
+        {
+            tailIndex = Extra_Random.GetRandomNonRepeating(shuffleIndex, out int newIndex, pool);
+            shuffleIndex = newIndex;
+            attackPosition = Extra_Random.RandomPointInCapsule(ranForwardAttackRange_Top, ranForwardAttackRange_Down, ranForwardAttackRadius);
+        }
+            
     }
 
     private void StartWallJump(float horizontal_boost)
@@ -724,6 +844,10 @@ public class Player_Movement : MonoBehaviour
             return false;
     }
 
-
+    private void OnDrawGizmos()
+    {
+        Gizmos.color = Color.yellow;
+        Gizmos.DrawWireSphere(transform.position, wallCheckDistance);
+    }
 
 }
